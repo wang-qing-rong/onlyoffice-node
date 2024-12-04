@@ -34,6 +34,8 @@ const documentService = require('./helpers/documentService');
 const fileUtility = require('./helpers/fileUtility');
 const wopiApp = require('./helpers/wopi/wopiRouting');
 const users = require('./helpers/users');
+const ParamsUtils = require('./helpers/paramsUtils');
+const MyDocManager = require('./helpers/myDocManager');
 
 const configServer = config.get('server');
 const siteUrl = configServer.get('siteUrl');
@@ -47,6 +49,7 @@ const cfgSignatureSecretExpiresIn = configServer.get('token.expiresIn');
 const cfgSignatureSecret = configServer.get('token.secret');
 const verifyPeerOff = configServer.get('verify_peer_off');
 const plugins = config.get('plugins');
+const paramsUtils = new ParamsUtils();
 
 if (verifyPeerOff) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -210,6 +213,42 @@ app.get('/download', (req, res) => { // define a handler for downloading files
   if (filePath === '') {
     filePath = req.DocManager.storagePath(fileName, userAddress); // or to the original document
   }
+
+  // add headers to the response to specify the page parameters
+  res.setHeader('Content-Length', fileSystem.statSync(filePath).size);
+  res.setHeader('Content-Type', mime.getType(filePath));
+
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+
+  const filestream = fileSystem.createReadStream(filePath);
+  filestream.pipe(res); // send file information to the response by streams
+});
+
+// 自定义下载链接
+app.get('/myDownload', (req, res) => { // define a handler for downloading files
+  req.DocManager = new MyDocManager(req, res);
+  const targetFile = paramsUtils.getFileParamsByFilePath(req);
+  const { fileName } = targetFile;
+  // const userAddress = req.query.useraddress;
+  let token = '';
+
+  if (cfgSignatureEnable && cfgSignatureUseForRequest) {
+    const authorization = req.get(cfgSignatureAuthorizationHeader);
+    if (authorization && authorization.startsWith(cfgSignatureAuthorizationHeaderPrefix)) {
+      token = authorization.substring(cfgSignatureAuthorizationHeaderPrefix.length);
+    }
+
+    try {
+      jwt.verify(token, cfgSignatureSecret);
+    } catch (err) {
+      console.log(`checkJwtHeader error: name = ${err.name} message = ${err.message} token = ${token}`);
+      res.sendStatus(403);
+      return;
+    }
+  }
+
+  // get the path to the force saved document version
+  const { filePath } = targetFile;
 
   // add headers to the response to specify the page parameters
   res.setHeader('Content-Length', fileSystem.statSync(filePath).size);
@@ -1291,6 +1330,183 @@ app.get('/formats', (req, res) => {
     res.render('error', { message: 'Server error' }); // render error template with the message parameter specified
   }
 });
+
+// -------------------------自定义参数API---------------
+
+// 打开指定文件
+app.get('/openfile', (req, res) => { // define a handler for editing document
+  try {
+    req.DocManager = new MyDocManager(req, res);
+    const user = users.getUser(req.query.userid);
+    const userid = user.id;
+    const { name } = user;
+    const targetFile = paramsUtils.getFileParamsByFilePath(req);
+
+    const { fileName } = targetFile;
+    const lang = req.DocManager.getLang();
+    const userDirectUrl = req.query.directUrl === 'true';
+
+    let actionData = 'null';
+    if (req.query.action) {
+      try {
+        actionData = JSON.stringify(JSON.parse(req.query.action));
+      } catch (ex) {
+        console.log(ex);
+      }
+    }
+
+    let type = req.query.type || ''; // type: embedded/mobile/desktop
+    if (type === '') {
+      type = new RegExp(configServer.get('mobileRegEx'), 'i').test(req.get('User-Agent')) ? 'mobile' : 'desktop';
+    } else if (type !== 'mobile'
+            && type !== 'embedded') {
+      type = 'desktop';
+    }
+
+    const userGroup = user.group;
+    const { reviewGroups } = user;
+    const { commentGroups } = user;
+    const { userInfoGroups } = user;
+
+    const usersInfo = [];
+    const usersForProtect = [];
+    if (user.id !== 'uid-0') {
+      users.getAllUsers().forEach((userInfo) => {
+        const u = userInfo;
+        u.image = userInfo.avatar ? `${req.DocManager.getServerUrl()}/images/${userInfo.id}.png` : null;
+        usersInfo.push(u);
+      }, usersInfo);
+
+      users.getUsersForProtect(user.id).forEach((userInfo) => {
+        const u = userInfo;
+        u.image = userInfo.avatar ? `${req.DocManager.getServerUrl()}/images/${userInfo.id}.png` : null;
+        usersForProtect.push(u);
+      }, usersForProtect);
+    }
+
+    if (!req.DocManager.existsSync(targetFile.filePath)) {
+      throw new Error(`File not found: ${fileName}`);
+    }
+    const key = req.DocManager.getKey(targetFile);
+    const url = req.DocManager.getDownloadUrl(targetFile.filePath, true);
+    const directUrl = req.DocManager.getDownloadUrl(fileName);
+    const mode = req.query.mode || 'view'; // mode: view/edit/review/comment/fillForms/embedded
+    const submitForm = false;
+    // file config data
+    const argss = {
+      apiUrl: siteUrl + configServer.get('apiUrl'),
+      file: {
+        name: fileName,
+        ext: fileUtility.getFileExtension(fileName, true),
+        uri: url,
+        directUrl: !userDirectUrl ? null : directUrl,
+        uriUser: directUrl,
+        created: new Date().toDateString(),
+        favorite: user.favorite != null ? user.favorite : 'null',
+      },
+      editor: {
+        type,
+        documentType: fileUtility.getFileType(fileName),
+        key,
+        token: '',
+        callbackUrl: req.DocManager.getCallback(fileName),
+        createUrl: null,
+        templates: null,
+        isEdit: false,
+        review: true,
+        chat: userid !== 'uid-0',
+        coEditing: mode === 'view' && userid === 'uid-0' ? { mode: 'strict', change: false } : null,
+        comment: mode !== 'view' && mode !== 'fillForms' && mode !== 'embedded' && mode !== 'blockcontent',
+        fillForms: mode !== 'view' && mode !== 'comment' && mode !== 'blockcontent',
+        modifyFilter: mode !== 'filter',
+        modifyContentControl: mode !== 'blockcontent',
+        copy: !user.deniedPermissions.includes('copy'),
+        download: !user.deniedPermissions.includes('download'),
+        print: !user.deniedPermissions.includes('print'),
+        mode: mode !== 'view' ? 'edit' : 'view',
+        canBackToFolder: type !== 'embedded',
+        curUserHostAddress: req.DocManager.curUserHostAddress(),
+        lang,
+        userid: userid !== 'uid-0' ? userid : null,
+        userImage: user.avatar ? `${req.DocManager.getServerUrl()}/images/${user.id}.png` : null,
+        name,
+        userGroup,
+        reviewGroups: JSON.stringify(reviewGroups),
+        commentGroups: JSON.stringify(commentGroups),
+        userInfoGroups: JSON.stringify(userInfoGroups),
+        fileChoiceUrl,
+        submitForm,
+        plugins: JSON.stringify(plugins),
+        actionData,
+        fileKey: userid !== 'uid-0'
+          ? JSON.stringify({ fileName, userAddress: req.DocManager.curUserHostAddress() }) : null,
+        instanceId: userid !== 'uid-0' ? req.DocManager.getInstanceId() : null,
+        protect: !user.deniedPermissions.includes('protect'),
+        goback: user.goback != null ? user.goback : '',
+        close: user.close,
+      },
+      dataInsertImage: {
+        fileType: 'svg',
+        url: `${req.DocManager.getServerUrl(true)}/images/logo.svg`,
+        directUrl: !userDirectUrl ? null : `${req.DocManager.getServerUrl()}/images/logo.svg`,
+      },
+      dataDocument: {
+        fileType: 'docx',
+        url: `${req.DocManager.getServerUrl(true)}/assets/document-templates/sample/sample.docx`,
+        directUrl: !userDirectUrl
+          ? null
+          : `${req.DocManager.getServerUrl()}/assets/document-templates/sample/sample.docx`,
+      },
+      dataSpreadsheet: {
+        fileType: 'csv',
+        url: `${req.DocManager.getServerUrl(true)}/csv`,
+        directUrl: !userDirectUrl ? null : `${req.DocManager.getServerUrl()}/csv`,
+      },
+      usersForMentions: user.id !== 'uid-0' ? users.getUsersForMentions(user.id) : null,
+      usersForProtect,
+      usersInfo,
+    };
+
+    if (cfgSignatureEnable) {
+      app.render('config', argss, (err, html) => { // render a config template with the parameters specified
+        if (err) {
+          console.log(err);
+        } else {
+          // sign token with given data using signature secret
+          argss.editor.token = jwt.sign(
+            JSON.parse(`{${html}}`),
+            cfgSignatureSecret,
+            { expiresIn: cfgSignatureSecretExpiresIn },
+          );
+          argss.dataInsertImage.token = jwt.sign(
+            argss.dataInsertImage,
+            cfgSignatureSecret,
+            { expiresIn: cfgSignatureSecretExpiresIn },
+          );
+          argss.dataDocument.token = jwt.sign(
+            argss.dataDocument,
+            cfgSignatureSecret,
+            { expiresIn: cfgSignatureSecretExpiresIn },
+          );
+          argss.dataSpreadsheet.token = jwt.sign(
+            argss.dataSpreadsheet,
+            cfgSignatureSecret,
+            { expiresIn: cfgSignatureSecretExpiresIn },
+          );
+        }
+        console.log('argss---->', argss);
+        res.render('editor', argss); // render the editor template with the parameters specified
+      });
+    } else {
+      res.render('editor', argss);
+    }
+  } catch (ex) {
+    console.log(ex);
+    res.status(500);
+    res.render('error', { message: `Server error: ${ex.message}` });
+  }
+});
+
 
 wopiApp.registerRoutes(app);
 

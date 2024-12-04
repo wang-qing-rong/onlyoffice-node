@@ -12,8 +12,8 @@
     }
   },
   "server": {
-    "port": 3000,
-    "siteUrl": "http://documentserver/",
+    "port": 3001,
+    "siteUrl": "http://192.168.10.139:80/",
     "wopi": {
       "discovery": "hosting/discovery"
     },
@@ -24,17 +24,18 @@
     "exampleUrl": null,
     "storageFolder": "./files",
     "storagePath": "/files",
+    "myStorageFolder": "D:/onlyofficeHistory",
     "maxFileSize": 1073741824,
     "maxNameLength": 50,
     "enableForgotten": false,
     "mobileRegEx": "android|avantgo|playbook|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od|ad)|iris|kindle|lge |maemo|midp|mmp|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\\/|plucker|pocket|psp|symbian|treo|up\\.(browser|link)|vodafone|wap|windows (ce|phone)|xda|xiino",
     "token": {
-        "enable": false,
+        "enable": true,
         "useforrequest": true,
         "algorithmRequest": "HS256",
         "authorizationHeader": "Authorization",
         "authorizationHeaderPrefix": "Bearer ",
-        "secret": "secret",
+        "secret": "PYf2rtrDISIUDB7ms6Ic90ycQB5zyVhv",
         "expiresIn": "5m"
     },
     "verify_peer_off": true,
