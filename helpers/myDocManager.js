@@ -85,7 +85,7 @@ MyDocManager.prototype.getCustomParams = function getCustomParams() {
 };
 
 // get the correct file name if such a name already exists
-MyDocManager.prototype.getCorrectName = function getCorrectName(fileName, userAddress) {
+MyDocManager.prototype.getCorrectName = function getCorrectName(fileName, userAddress, filePath) {
   // get file name from the url without extension
   const maxName = configServer.get('maxNameLength');
   let baseName = fileUtility.getFileName(fileName, true);
@@ -96,7 +96,7 @@ MyDocManager.prototype.getCorrectName = function getCorrectName(fileName, userAd
   let index = 1;
 
   // if the file with such a name already exists in this directory
-  while (this.existsSync(this.storagePath(name, userAddress))) {
+  while (this.existsSync(path.join(path.dirname(filePath), fileName))) {
     name = `${baseName} (${index})${ext}`; // add an index after its base name
     index += 1;
   }
@@ -150,24 +150,20 @@ MyDocManager.prototype.createDemo = function createDemo(isSample, fileExt, useri
 };
 
 // save file data to the file
-MyDocManager.prototype.saveFileData = function saveFileData(fileName, userid, username, userAddress) {
-  let address = userAddress;
-  if (!address) {
-    address = this.curUserHostAddress(); // get current user host address
-  }
+MyDocManager.prototype.saveFileData = function saveFileData(filePath, userid, username) {
   // get full creation date of the document
-  const dateCreate = fileSystem.statSync(this.storagePath(fileName, address)).mtime;
+  const dateCreate = fileSystem.statSync(filePath).mtime;
   const minutes = (dateCreate.getMinutes() < 10 ? '0' : '') + dateCreate.getMinutes().toString();
   const month = (dateCreate.getMonth() < 9 ? '0' : '') + (parseInt(dateCreate.getMonth().toString(), 10) + 1);
   const sec = (dateCreate.getSeconds() < 10 ? '0' : '') + dateCreate.getSeconds().toString();
   const dateFormat = `${dateCreate.getFullYear()}-${month}-${dateCreate.getDate()} `
     + `${dateCreate.getHours()}:${minutes}:${sec}`;
 
-  const fileInfo = this.historyPath(fileName, address, true); // get file history information
-  this.createDirectory(fileInfo); // create a new history directory if it doesn't exist
+  const fileInfo = this.historyPath(filePath); // get file history information
 
   // write all the file information to a new txt file
-  fileSystem.writeFileSync(path.join(fileInfo, `${fileName}.txt`), `${dateFormat},${userid},${username}`);
+  // eslint-disable-next-line max-len
+  fileSystem.writeFileSync(path.join(fileInfo, `${path.basename(filePath)}.txt`), `${dateFormat},${userid},${username}`);
 };
 
 // get file data
@@ -205,11 +201,11 @@ MyDocManager.prototype.getProtocol = function getProtocol() {
 };
 
 // get callback url
-MyDocManager.prototype.getCallback = function getCallback(fileName) {
+MyDocManager.prototype.getCallback = function getCallback(filePath,fileName) {
   const server = this.getServerUrl(true);
   const hostAddress = this.curUserHostAddress();
   // get callback handler
-  const handler = `/track?filename=${encodeURIComponent(fileName)}&useraddress=${encodeURIComponent(hostAddress)}`;
+  const handler = `/myTrack?filePath=${encodeURIComponent(filePath)}&filename=${encodeURIComponent(fileName)}&useraddress=${encodeURIComponent(hostAddress)}`;
 
   return server + handler;
 };
@@ -248,36 +244,27 @@ MyDocManager.prototype.storagePath = function storagePath(fileName, userAddress)
 };
 
 // get the path to the forcesaved file version
-MyDocManager.prototype.forcesavePath = function forcesavePath(fileName, userAddress, create) {
-  let directory = this.storageRootPath(userAddress);
-  if (!this.existsSync(directory)) { // the directory with host address doesn't exist
-    return '';
-  }
-  directory = path.join(directory, `${fileName}-history`); // get the path to the history of the given file
-  // the history directory doesn't exist and we are not supposed to create it
-  if (!create && !this.existsSync(directory)) {
-    return '';
-  }
-  this.createDirectory(directory); // create history directory if it doesn't exist
-  directory = path.join(directory, fileName); // and get the path to the given file
-  if (!create && !this.existsSync(directory)) {
-    return '';
-  }
+MyDocManager.prototype.forcesavePath = function forcesavePath(fileName, filePath) {
+  let directory = this.historyPath(filePath);
+  directory = path.join(directory, fileName);
   return directory;
 };
 
-// 返回存放历史记录的目录
+// 返回存放历史记录的目录,若目录不存在则创建这个目录
 MyDocManager.prototype.historyPath = function historyPath(formFilePath) {
-  let directory = this.storageRootPath(formFilePath);
-  directory = `${formFilePath}-history`;
+  // eslint-disable-next-line no-param-reassign
+  formFilePath = formFilePath.replace(/^[a-zA-Z]:/, '').replaceAll('\\', '/');
+  // eslint-disable-next-line no-param-reassign
+  if (formFilePath[0] === '/')formFilePath = formFilePath.slice(1);
+  const directory = path.join(myStorageConfigFolder, `${formFilePath}-history`);
   this.createDirectory(directory);
   return directory;
 };
 
 // get the path to the specified file version
-MyDocManager.prototype.versionPath = function versionPath(fileName, userAddress, version) {
+MyDocManager.prototype.versionPath = function versionPath(filePath, version) {
   // get the path to the history of a given file or create it if it doesn't exist
-  const historyPath = this.historyPath(fileName, userAddress, true);
+  const historyPath = this.historyPath(filePath);
   return path.join(historyPath, `${version}`);
 };
 
@@ -287,18 +274,18 @@ MyDocManager.prototype.prevFilePath = function prevFilePath(fileName, userAddres
 };
 
 // get the path to the file with document versions differences
-MyDocManager.prototype.diffPath = function diffPath(fileName, userAddress, version) {
-  return path.join(this.versionPath(fileName, userAddress, version), 'diff.zip');
+MyDocManager.prototype.diffPath = function diffPath(filePath, version) {
+  return path.join(this.versionPath(filePath, version), 'diff.zip');
 };
 
 // get the path to the file with document changes
-MyDocManager.prototype.changesPath = function changesPath(fileName, userAddress, version) {
-  return path.join(this.versionPath(fileName, userAddress, version), 'changes.txt');
+MyDocManager.prototype.changesPath = function changesPath(filePath, version) {
+  return path.join(this.versionPath(filePath, version), 'changes.txt');
 };
 
 // get the path to the file with key value in it
-MyDocManager.prototype.keyPath = function keyPath(fileName, userAddress, version) {
-  return path.join(this.versionPath(fileName, userAddress, version), 'key.txt');
+MyDocManager.prototype.keyPath = function keyPath(filePath, version) {
+  return path.join(this.versionPath(filePath, version), 'key.txt');
 };
 
 // get the path to the file with the user information
